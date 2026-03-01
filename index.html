@@ -16,6 +16,18 @@
     }
     h1 { font-size: 1.5rem; margin-bottom: 4px; }
     .subtitle { color: #666; margin-bottom: 24px; font-size: 0.9rem; }
+    textarea {
+      width: 100%;
+      padding: 12px;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      font-family: inherit;
+      font-size: 0.9rem;
+      resize: vertical;
+      margin-bottom: 12px;
+      background: #fff;
+    }
+    textarea:focus { outline: none; border-color: #1a73e8; }
     button {
       background: #1a73e8;
       color: #fff;
@@ -63,11 +75,24 @@
       white-space: nowrap;
     }
     .app-link:hover { text-decoration: underline; }
+    .app-delete {
+      background: none;
+      border: 1px solid #e0e0e0;
+      color: #999;
+      padding: 6px 10px;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      margin: 0;
+      white-space: nowrap;
+    }
+    .app-delete:hover { border-color: #d93025; color: #d93025; background: #fce8e6; }
   </style>
 </head>
 <body>
   <h1>PWA Factory</h1>
   <p class="subtitle">Publish installable PWAs entirely client-side.</p>
+  <textarea id="app-content" rows="3" placeholder="Optional: type some text for your app to display"></textarea>
   <button id="publish-btn">Publish Test App</button>
   <h2>Published Apps</h2>
   <ul class="app-list" id="app-list">
@@ -106,6 +131,15 @@
       });
     }
 
+    function dbDelete(db, storeName, key) {
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readwrite');
+        const req = tx.objectStore(storeName).delete(key);
+        req.onsuccess = () => resolve();
+        req.onerror = () => reject(req.error);
+      });
+    }
+
     function dbGetAll(db, storeName) {
       return new Promise((resolve, reject) => {
         const tx = db.transaction(storeName, 'readonly');
@@ -133,7 +167,11 @@
     const THEME_COLORS = ['#e91e63', '#9c27b0', '#673ab7', '#3f51b5', '#1a73e8', '#00897b', '#43a047', '#ef6c00', '#f4511e'];
     const ICON_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
 
-    function generateTestApp() {
+    function escapeHTML(str) {
+      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+
+    function generateTestApp(userText) {
       const id = crypto.randomUUID();
       const color = THEME_COLORS[Math.floor(Math.random() * THEME_COLORS.length)];
       const letter = ICON_LETTERS[Math.floor(Math.random() * ICON_LETTERS.length)];
@@ -191,7 +229,7 @@
 <body>
   <div class="icon">${letter}</div>
   <h1>${name}</h1>
-  <p>This is an installable PWA served entirely from IndexedDB.</p>
+  <p>${escapeHTML(userText || 'This is an installable PWA served entirely from IndexedDB.')}</p>
   <p class="id">${id}</p>
 </body>
 </html>`;
@@ -226,8 +264,27 @@
             <div class="app-id">${app.id}</div>
           </div>
           <a class="app-link" href="${appURL}">Open &rarr;</a>
+          <button class="app-delete" onclick="deleteApp('${app.id}')">Delete</button>
         </li>`;
       }).join('');
+    }
+
+    async function deleteApp(appId) {
+      try {
+        const db = await openDB();
+        await dbDelete(db, 'apps', appId);
+        await dbDelete(db, 'content', appId);
+        db.close();
+
+        // Unregister the service worker for this app
+        const scope = basePath + 'apps/' + appId + '/';
+        const registration = await navigator.serviceWorker.getRegistration(scope);
+        if (registration) await registration.unregister();
+
+        await renderAppList();
+      } catch (err) {
+        alert('Failed to delete: ' + err.message);
+      }
     }
 
     publishBtn.addEventListener('click', async () => {
@@ -235,7 +292,8 @@
       publishBtn.textContent = 'Publishing...';
 
       try {
-        const { app, html } = generateTestApp();
+        const userText = document.getElementById('app-content').value.trim();
+        const { app, html } = generateTestApp(userText);
         const db = await openDB();
         await dbPut(db, 'apps', app);
         await dbPut(db, 'content', { appId: app.id, html });
