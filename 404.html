@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Loading...</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background: #fafafa;
+      color: #1a1a1a;
+      padding: 24px;
+    }
+    .spinner {
+      width: 40px;
+      height: 40px;
+      border: 4px solid #e0e0e0;
+      border-top-color: #1a73e8;
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-bottom: 20px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .status { color: #666; font-size: 0.95rem; margin-bottom: 8px; }
+    .error {
+      color: #d93025;
+      background: #fce8e6;
+      padding: 16px 24px;
+      border-radius: 8px;
+      max-width: 480px;
+      text-align: center;
+      line-height: 1.5;
+    }
+    .error a { color: #1a73e8; }
+    .hidden { display: none; }
+  </style>
+</head>
+<body>
+  <div id="loading">
+    <div class="spinner"></div>
+    <p class="status" id="status-text">Bootstrapping app...</p>
+  </div>
+  <div id="error" class="error hidden"></div>
+
+  <script>
+    const DB_NAME = 'pwa-factory';
+    const DB_VERSION = 1;
+
+    // ─── IndexedDB helpers ─────────────────────────────────────────
+
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, DB_VERSION);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains('apps')) {
+            db.createObjectStore('apps', { keyPath: 'id' });
+          }
+          if (!db.objectStoreNames.contains('content')) {
+            db.createObjectStore('content', { keyPath: 'appId' });
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    function dbGet(db, storeName, key) {
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readonly');
+        const req = tx.objectStore(storeName).get(key);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    // ─── UI helpers ────────────────────────────────────────────────
+
+    function setStatus(msg) {
+      document.getElementById('status-text').textContent = msg;
+    }
+
+    function showError(msg) {
+      document.getElementById('loading').classList.add('hidden');
+      const el = document.getElementById('error');
+      el.innerHTML = msg;
+      el.classList.remove('hidden');
+    }
+
+    // ─── Bootstrap logic ───────────────────────────────────────────
+
+    async function bootstrap() {
+      const pathname = location.pathname;
+
+      // Extract app ID from URL: /base/apps/<uuid>/...
+      const appsIdx = pathname.indexOf('/apps/');
+      if (appsIdx === -1) {
+        showError('Invalid URL. No app path found.<br><a href="/">Go to Factory</a>');
+        return;
+      }
+
+      // Base path is everything before /apps/
+      const basePath = pathname.substring(0, appsIdx + 1); // e.g. / or /repo-name/
+
+      // Extract UUID — the segment after /apps/
+      const afterApps = pathname.substring(appsIdx + 6); // after "/apps/"
+      const slashIdx = afterApps.indexOf('/');
+      const appId = slashIdx === -1 ? afterApps : afterApps.substring(0, slashIdx);
+
+      if (!appId) {
+        showError('Invalid URL. No app ID found.<br><a href="' + basePath + '">Go to Factory</a>');
+        return;
+      }
+
+      // Verify the app exists in IndexedDB
+      setStatus('Checking app...');
+      let db;
+      try {
+        db = await openDB();
+      } catch (err) {
+        showError('Failed to open database: ' + err.message + '<br><a href="' + basePath + '">Go to Factory</a>');
+        return;
+      }
+
+      const app = await dbGet(db, 'apps', appId);
+      db.close();
+
+      if (!app) {
+        showError('App not found: <code>' + appId + '</code><br><br>It may have been deleted or this is a different browser.<br><a href="' + basePath + '">Go to Factory</a>');
+        return;
+      }
+
+      // Register SW scoped to this app
+      setStatus('Registering service worker...');
+      const scope = basePath + 'apps/' + appId + '/';
+      const swURL = basePath + 'sw.js';
+
+      let registration;
+      try {
+        registration = await navigator.serviceWorker.register(swURL, { scope });
+      } catch (err) {
+        showError('Service worker registration failed:<br>' + err.message + '<br><br><a href="' + basePath + '">Go to Factory</a>');
+        return;
+      }
+
+      // Wait for the SW to activate
+      setStatus('Activating...');
+      const sw = registration.installing || registration.waiting || registration.active;
+
+      if (sw && sw.state === 'activated') {
+        // Already active — reload immediately
+        location.reload();
+        return;
+      }
+
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('Timed out waiting for service worker activation')), 10000);
+
+        function onStateChange() {
+          if (sw.state === 'activated') {
+            clearTimeout(timeout);
+            sw.removeEventListener('statechange', onStateChange);
+            resolve();
+          }
+        }
+
+        if (sw) {
+          sw.addEventListener('statechange', onStateChange);
+          // Check again in case it changed during setup
+          if (sw.state === 'activated') {
+            clearTimeout(timeout);
+            sw.removeEventListener('statechange', onStateChange);
+            resolve();
+          }
+        } else {
+          // Wait for a new installing worker
+          registration.addEventListener('updatefound', () => {
+            const newSW = registration.installing;
+            newSW.addEventListener('statechange', () => {
+              if (newSW.state === 'activated') {
+                clearTimeout(timeout);
+                resolve();
+              }
+            });
+          });
+        }
+      }).catch(err => {
+        showError('Service worker activation failed:<br>' + err.message + '<br><br><a href="' + basePath + '">Go to Factory</a>');
+        return;
+      });
+
+      // SW is active — reload so it intercepts the navigation
+      setStatus('Launching app...');
+      location.reload();
+    }
+
+    // Go
+    bootstrap();
+  </script>
+</body>
+</html>

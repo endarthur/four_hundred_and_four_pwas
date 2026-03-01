@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>PWA Factory</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 24px 16px;
+      color: #1a1a1a;
+      background: #fafafa;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 4px; }
+    .subtitle { color: #666; margin-bottom: 24px; font-size: 0.9rem; }
+    button {
+      background: #1a73e8;
+      color: #fff;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 8px;
+      font-size: 1rem;
+      cursor: pointer;
+      margin-bottom: 32px;
+    }
+    button:hover { background: #1557b0; }
+    button:active { transform: scale(0.98); }
+    h2 { font-size: 1.1rem; margin-bottom: 12px; }
+    .empty { color: #999; font-style: italic; }
+    .app-list { list-style: none; }
+    .app-list li {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .app-icon {
+      width: 40px;
+      height: 40px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #fff;
+      font-weight: bold;
+      font-size: 1.1rem;
+      flex-shrink: 0;
+    }
+    .app-info { flex: 1; min-width: 0; }
+    .app-name { font-weight: 600; }
+    .app-id { font-size: 0.75rem; color: #999; font-family: monospace; word-break: break-all; }
+    .app-link {
+      color: #1a73e8;
+      text-decoration: none;
+      font-weight: 500;
+      white-space: nowrap;
+    }
+    .app-link:hover { text-decoration: underline; }
+  </style>
+</head>
+<body>
+  <h1>PWA Factory</h1>
+  <p class="subtitle">Publish installable PWAs entirely client-side.</p>
+  <button id="publish-btn">Publish Test App</button>
+  <h2>Published Apps</h2>
+  <ul class="app-list" id="app-list">
+    <li class="empty">No apps yet.</li>
+  </ul>
+
+  <script>
+    const DB_NAME = 'pwa-factory';
+    const DB_VERSION = 1;
+
+    // ─── IndexedDB helpers ─────────────────────────────────────────
+
+    function openDB() {
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, DB_VERSION);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          if (!db.objectStoreNames.contains('apps')) {
+            db.createObjectStore('apps', { keyPath: 'id' });
+          }
+          if (!db.objectStoreNames.contains('content')) {
+            db.createObjectStore('content', { keyPath: 'appId' });
+          }
+        };
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    function dbPut(db, storeName, value) {
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readwrite');
+        const req = tx.objectStore(storeName).put(value);
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    function dbGetAll(db, storeName) {
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(storeName, 'readonly');
+        const req = tx.objectStore(storeName).getAll();
+        req.onsuccess = () => resolve(req.result);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    // ─── Base path detection ───────────────────────────────────────
+
+    // On GH Pages: /repo-name/index.html → basePath = /repo-name/
+    // On localhost: /index.html → basePath = /
+    function getBasePath() {
+      const path = location.pathname;
+      // Remove trailing filename if present
+      const dir = path.endsWith('/') ? path : path.substring(0, path.lastIndexOf('/') + 1);
+      return dir;
+    }
+
+    const basePath = getBasePath();
+
+    // ─── Test app content generator ────────────────────────────────
+
+    const THEME_COLORS = ['#e91e63', '#9c27b0', '#673ab7', '#3f51b5', '#1a73e8', '#00897b', '#43a047', '#ef6c00', '#f4511e'];
+    const ICON_LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+    function generateTestApp() {
+      const id = crypto.randomUUID();
+      const color = THEME_COLORS[Math.floor(Math.random() * THEME_COLORS.length)];
+      const letter = ICON_LETTERS[Math.floor(Math.random() * ICON_LETTERS.length)];
+      const appNum = Date.now().toString(36).slice(-4).toUpperCase();
+      const name = 'Test App ' + appNum;
+
+      const app = {
+        id,
+        name,
+        shortName: appNum,
+        createdAt: new Date().toISOString(),
+        themeColor: color,
+        iconText: letter,
+      };
+
+      const html = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${name}</title>
+  <link rel="manifest" href="manifest.json">
+  <meta name="theme-color" content="${color}">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      background: linear-gradient(135deg, ${color}22, ${color}44);
+      color: #1a1a1a;
+      padding: 24px;
+    }
+    .icon {
+      width: 96px; height: 96px;
+      border-radius: 24px;
+      background: ${color};
+      color: #fff;
+      font-size: 48px;
+      font-weight: bold;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      margin-bottom: 24px;
+      box-shadow: 0 4px 12px ${color}66;
+    }
+    h1 { font-size: 1.5rem; margin-bottom: 8px; }
+    p { color: #666; margin-bottom: 4px; font-size: 0.9rem; }
+    .id { font-family: monospace; font-size: 0.75rem; color: #999; word-break: break-all; text-align: center; margin-top: 16px; }
+  </style>
+</head>
+<body>
+  <div class="icon">${letter}</div>
+  <h1>${name}</h1>
+  <p>This is an installable PWA served entirely from IndexedDB.</p>
+  <p class="id">${id}</p>
+</body>
+</html>`;
+
+      return { app, html };
+    }
+
+    // ─── UI ────────────────────────────────────────────────────────
+
+    const publishBtn = document.getElementById('publish-btn');
+    const appListEl = document.getElementById('app-list');
+
+    async function renderAppList() {
+      const db = await openDB();
+      const apps = await dbGetAll(db, 'apps');
+      db.close();
+
+      if (apps.length === 0) {
+        appListEl.innerHTML = '<li class="empty">No apps yet.</li>';
+        return;
+      }
+
+      // Sort newest first
+      apps.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+
+      appListEl.innerHTML = apps.map(app => {
+        const appURL = basePath + 'apps/' + app.id + '/';
+        return `<li>
+          <div class="app-icon" style="background:${app.themeColor}">${app.iconText}</div>
+          <div class="app-info">
+            <div class="app-name">${app.name}</div>
+            <div class="app-id">${app.id}</div>
+          </div>
+          <a class="app-link" href="${appURL}">Open &rarr;</a>
+        </li>`;
+      }).join('');
+    }
+
+    publishBtn.addEventListener('click', async () => {
+      publishBtn.disabled = true;
+      publishBtn.textContent = 'Publishing...';
+
+      try {
+        const { app, html } = generateTestApp();
+        const db = await openDB();
+        await dbPut(db, 'apps', app);
+        await dbPut(db, 'content', { appId: app.id, html });
+        db.close();
+
+        // Request persistent storage
+        if (navigator.storage && navigator.storage.persist) {
+          await navigator.storage.persist();
+        }
+
+        await renderAppList();
+      } catch (err) {
+        alert('Failed to publish: ' + err.message);
+      } finally {
+        publishBtn.disabled = false;
+        publishBtn.textContent = 'Publish Test App';
+      }
+    });
+
+    // Initial render
+    renderAppList();
+  </script>
+</body>
+</html>
